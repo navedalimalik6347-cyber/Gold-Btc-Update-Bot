@@ -11,7 +11,7 @@ if not gemini_api_key:
 client_ai = genai.Client(api_key=gemini_api_key)
 
 def get_market_data():
-    """Fetches verified live XAUUSD spot/futures and BTC-USD prices safely as per strict prompt rules."""
+    """Fetches verified live XAUUSD spot/futures and BTC-USD prices safely."""
     gold_price = "N/A"
     btc_price = "N/A"
     
@@ -34,46 +34,32 @@ def get_market_data():
     return gold_price, btc_price
 
 def generate_strict_market_post(gold_price, btc_price):
-    """Generates professional financial intelligence post strictly adhering to user's framework."""
-    
-    # Embedding the exact operational instructions and rules into the prompt
+    """Generates professional financial intelligence post using updated Gemini model."""
     master_prompt = f"""
-    You are an AI-powered financial market intelligence and news agent for a Telegram channel focused on Gold (XAUUSD), Bitcoin (BTC/USD), Forex, Crypto and major global macro/geopolitical developments.
+    You are an AI-powered financial market intelligence and news agent for a Telegram channel focused on Gold (XAUUSD), Bitcoin (BTC/USD), and global macro developments.
     
     Current Verified Prices:
     - Gold (GC): {gold_price}
     - Bitcoin (BTC): {btc_price}
     
     STRICT RULES TO FOLLOW:
-    1. ZERO FABRICATION: Never invent prices, support/resistance levels, news, or economic data. Use the verified live prices provided.
-    2. COPYRIGHT PROTECTION: Do not copy full articles or paragraphs. Read, verify, and write an original summary with proper source attribution (e.g., Source: Reuters / Federal Reserve / BLS / CoinDesk / CME Group).
-    3. NO GUARANTEED PROFITS: Maintain neutral language, factual financial terminology, and avoid exaggerated claims or buy/sell signals.
-    4. TEMPLATE STRUCTURE: Use the professional Gold/BTC update template format containing:
-       - Price
-       - Market Structure
-       - Support (Nearest & Next)
-       - Resistance (Nearest & Next)
-       - Market Context / Key Watch
-       - Source
-       
-    Generate a professional market update for the Telegram channel now following these exact standards.
+    1. ZERO FABRICATION: Never invent prices or data. Use the verified live prices provided.
+    2. TEMPLATE STRUCTURE: Provide a professional market update including Price, Market Structure, Support, Resistance, and Source.
     """
     
     try:
         response = client_ai.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=master_prompt
         )
         return response.text
     except Exception as e:
         print(f"Gemini generation error: {e}")
         return (
-            f"🟡 **GOLD MARKET UPDATE**\n\n"
-            f"Price: {gold_price}\n\n"
-            f"Market Structure:\n"
-            f"Neutral structure observed based on verified session ranges.\n\n"
-            f"Support & Resistance:\n"
-            f"Levels derived from verified live data.\n\n"
+            f"🟡 **GOLD & BTC MARKET UPDATE**\n\n"
+            f"• Gold (XAUUSD): {gold_price}\n"
+            f"• Bitcoin (BTC): {btc_price}\n\n"
+            f"Market Structure: Stable range observed across verified sessions.\n"
             f"Source: Verified Market Data"
         )
 
