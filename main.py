@@ -30,8 +30,10 @@ GOLD_PRICE_URL = "https://api.goldprice.dev/v1/prices"
 GOLD_BARS_URL = "https://api.goldprice.dev/v1/bars"
 XAUS_SPOT_URL = "https://xaus.com/api/v1/spot?compact=1"
 XAUS_CHART_URL = "https://xaus.com/api/v1/chart"
-BTC_KLINES_URL = "https://api.binance.com/api/v3/klines"
-BTC_TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr"
+BTC_COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+BTC_COINBASE_TICKER_URL = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+BTC_KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
+BTC_KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
 
 NEWS_QUERIES = [
     "gold XAUUSD",
@@ -290,39 +292,144 @@ def get_gold_candles(interval="15m", range_="5d"):
     return candles
 
 def get_btc_data(interval="15m", limit=300):
-    # Binance public market-data endpoint; no API key required.
-    raw = http_json(
-        BTC_KLINES_URL,
-        params={"symbol": "BTCUSDT", "interval": interval, "limit": limit}
-    )
-    ticker = http_json(
-        BTC_TICKER_URL,
-        params={"symbol": "BTCUSDT"}
-    )
+    """Get real BTC/USD market data without Binance.
 
-    candles = []
-    for p in raw:
-        candles.append({
-            "t": int(p[0] / 1000),
-            "open": float(p[1]),
-            "high": float(p[2]),
-            "low": float(p[3]),
-            "close": float(p[4]),
-            "volume": float(p[5])
-        })
-
-    price = float(ticker["lastPrice"])
-    change_pct = float(ticker["priceChangePercent"])
-
-    if len(candles) < 30 or price <= 0:
-        raise RuntimeError("Not enough real BTC market data returned.")
-
-    return {
-        "price": price,
-        "change_pct": change_pct,
-        "candles": candles,
-        "source": "Binance BTC/USDT market data"
+    GitHub Actions is currently receiving HTTP 451 from Binance's public API.
+    We therefore use Coinbase public market data first, with Kraken as a
+    second public-data fallback. No API key is required for either path.
+    """
+    granularity_map = {
+        "1m": 60,
+        "5m": 300,
+        "15m": 900,
+        "1h": 3600,
+        "6h": 21600,
+        "1d": 86400,
     }
+    granularity = granularity_map.get(interval, 900)
+
+    # ----------------------------
+    # Primary: Coinbase Exchange
+    # ----------------------------
+    try:
+        raw = http_json(
+            BTC_COINBASE_CANDLES_URL,
+            params={"granularity": granularity},
+            timeout=15,
+        )
+
+        candles = []
+        for p in raw:
+            if not isinstance(p, list) or len(p) < 6:
+                continue
+            # Coinbase candle format: [time, low, high, open, close, volume]
+            candles.append({
+                "t": int(p[0]),
+                "open": float(p[3]),
+                "high": float(p[2]),
+                "low": float(p[1]),
+                "close": float(p[4]),
+                "volume": float(p[5]),
+            })
+
+        candles.sort(key=lambda x: x["t"])
+
+        ticker = http_json(BTC_COINBASE_TICKER_URL, timeout=15)
+        price = float(ticker.get("price", 0))
+
+        if price <= 0 and candles:
+            price = candles[-1]["close"]
+
+        # 24h change from 15m candles: 96 bars = 24 hours.
+        if len(candles) >= 97:
+            base = candles[-97]["close"]
+            change_pct = ((price - base) / base) * 100 if base else 0.0
+        else:
+            change_pct = 0.0
+
+        if len(candles) >= 30 and price > 0:
+            return {
+                "price": price,
+                "change_pct": change_pct,
+                "candles": candles[-limit:],
+                "source": "Coinbase BTC/USD public market data",
+            }
+    except Exception as coinbase_error:
+        coinbase_message = str(coinbase_error)
+    else:
+        coinbase_message = "Coinbase returned insufficient BTC data."
+
+    # ----------------------------
+    # Fallback: Kraken public API
+    # ----------------------------
+    try:
+        raw = http_json(
+            BTC_KRAKEN_OHLC_URL,
+            params={"pair": "XBTUSD", "interval": 15},
+            timeout=15,
+        )
+
+        if raw.get("error"):
+            raise RuntimeError("Kraken OHLC error: " + ", ".join(raw["error"]))
+
+        result = raw.get("result", {})
+        rows = result.get("XXBTZUSD") or result.get("XBTUSD")
+        if not rows:
+            # Kraken may return the actual pair key under a different name.
+            rows = next((v for k, v in result.items() if k != "last" and isinstance(v, list)), None)
+
+        candles = []
+        for p in rows or []:
+            if len(p) < 7:
+                continue
+            candles.append({
+                "t": int(float(p[0])),
+                "open": float(p[1]),
+                "high": float(p[2]),
+                "low": float(p[3]),
+                "close": float(p[4]),
+                "volume": float(p[6]),
+            })
+
+        candles.sort(key=lambda x: x["t"])
+
+        ticker_raw = http_json(
+            BTC_KRAKEN_TICKER_URL,
+            params={"pair": "XBTUSD"},
+            timeout=15,
+        )
+        ticker_result = ticker_raw.get("result", {})
+        ticker_data = next(iter(ticker_result.values()), {}) if ticker_result else {}
+        price = float((ticker_data.get("c") or [0])[0])
+
+        if price <= 0 and candles:
+            price = candles[-1]["close"]
+
+        if len(candles) >= 97:
+            base = candles[-97]["close"]
+            change_pct = ((price - base) / base) * 100 if base else 0.0
+        else:
+            change_pct = 0.0
+
+        if len(candles) >= 30 and price > 0:
+            return {
+                "price": price,
+                "change_pct": change_pct,
+                "candles": candles[-limit:],
+                "source": "Kraken BTC/USD public market data",
+            }
+    except Exception as kraken_error:
+        raise RuntimeError(
+            "BTC market data unavailable. "
+            f"Coinbase error: {coinbase_message}; "
+            f"Kraken error: {kraken_error}"
+        )
+
+    raise RuntimeError(
+        "BTC market data unavailable. "
+        f"Coinbase error: {coinbase_message}; "
+        "Kraken returned insufficient data."
+    )
 
 
 # ----------------------------
