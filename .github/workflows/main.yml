@@ -1,12 +1,10 @@
 name: Gold Update & News 24/7
 
 on:
-
-  # Manual testing from GitHub Actions
   workflow_dispatch:
     inputs:
-      post_type:
-        description: "Choose what to post"
+      mode:
+        description: "Choose what to run"
         required: true
         default: "test"
         type: choice
@@ -16,13 +14,8 @@ on:
           - news
           - breaking
 
-  # Breaking-news checker
-  # GitHub supports scheduled workflows at a minimum
-  # interval of 5 minutes.
+  # 12 scheduled market updates per UTC day.
   schedule:
-    - cron: "*/5 * * * *"
-
-    # 12 scheduled market updates per UTC day
     - cron: "0 0 * * *"
     - cron: "0 2 * * *"
     - cron: "0 4 * * *"
@@ -36,70 +29,53 @@ on:
     - cron: "0 20 * * *"
     - cron: "0 22 * * *"
 
-
 permissions:
   contents: write
 
+concurrency:
+  group: gold-news-bot-state
+  cancel-in-progress: false
 
 jobs:
-
   run-bot:
-
     runs-on: ubuntu-latest
 
-    steps:
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_USERNAME: ${{ secrets.TELEGRAM_CHANNEL_USERNAME }}
+      POST_MODE: ${{ github.event.inputs.mode || 'market' }}
 
+    steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install yfinance requests google-genai
-
-      - name: Determine post mode
-        id: mode
-        shell: bash
-        run: |
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ inputs.post_type }}" >> "$GITHUB_OUTPUT"
-
-          elif [ "${{ github.event.schedule }}" = "*/5 * * * *" ]; then
-            echo "mode=breaking" >> "$GITHUB_OUTPUT"
-
-          else
-            echo "mode=market" >> "$GITHUB_OUTPUT"
-          fi
+          python -m pip install --upgrade pip
+          pip install requests feedparser google-genai
 
       - name: Run bot
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_USERNAME: ${{ secrets.TELEGRAM_CHANNEL_USERNAME }}
-          POST_MODE: ${{ steps.mode.outputs.mode }}
-
-        run: |
-          python main.py
+        run: python main.py
 
       - name: Save bot state
         if: always()
-        shell: bash
         run: |
-
-          if git diff --quiet state.json 2>/dev/null; then
-            echo "No state changes."
-            exit 0
+          if [ -f state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Update bot state"
+              git push
+            else
+              echo "state.json unchanged"
+            fi
+          else
+            echo "No state.json was created."
           fi
-
-          git config user.name "Gold Update Bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add state.json
-          git commit -m "Update bot state"
-          git push
