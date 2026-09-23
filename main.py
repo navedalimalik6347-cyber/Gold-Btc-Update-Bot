@@ -26,8 +26,10 @@ from google import genai
 GEMINI_MODEL = "gemini-3.6-flash"
 STATE_FILE = "state.json"
 
-GOLD_SPOT_URL = "https://xaus.com/api/v1/spot?compact=1"
-GOLD_CHART_URL = "https://xaus.com/api/v1/chart"
+GOLD_PRICE_URL = "https://api.goldprice.dev/v1/prices"
+GOLD_BARS_URL = "https://api.goldprice.dev/v1/bars"
+XAUS_SPOT_URL = "https://xaus.com/api/v1/spot?compact=1"
+XAUS_CHART_URL = "https://xaus.com/api/v1/chart"
 BTC_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BTC_TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
@@ -154,55 +156,138 @@ def telegram_send(text):
 # ----------------------------
 
 def get_gold_spot():
-    data = http_json(GOLD_SPOT_URL)
-    price = data.get("spot_usd_oz")
-    state = data.get("data_state", {})
-    updated = data.get("updated_at") or state.get("as_of")
+    # Primary: goldprice.dev anonymous XAU/USD spot endpoint.
+    # Fallback: XAUS keyless XAU/USD spot endpoint.
+    errors = []
 
-    if not isinstance(price, (int, float)) or price <= 0:
-        raise RuntimeError("Gold spot API returned no valid XAU/USD price.")
+    for url, source_name in [
+        (GOLD_PRICE_URL, "GoldPrice.dev XAU/USD spot"),
+        (XAUS_SPOT_URL, "XAUS XAU/USD spot"),
+    ]:
+        try:
+            if "goldprice.dev" in url:
+                data = http_json(
+                    url,
+                    params={"symbol": "XAU-USD-SPOT"},
+                    timeout=15,
+                )
+                row = (data.get("symbols") or [{}])[0]
+                price = float(row.get("price"))
+                updated = row.get("computed_at")
+                stale = bool(row.get("is_stale", False))
 
-    return {
-        "price": float(price),
-        "updated_at": updated,
-        "data_state": state.get("status", "unknown"),
-        "source": "XAUS XAU/USD spot"
-    }
+                if price <= 0 or stale:
+                    raise RuntimeError(
+                        f"GoldPrice.dev returned invalid/stale data: {row}"
+                    )
 
+                return {
+                    "price": price,
+                    "updated_at": updated,
+                    "data_state": "stale" if stale else "fresh",
+                    "source": source_name,
+                }
 
-def get_gold_candles(interval="15m", range_="5d"):
-    data = http_json(
-        GOLD_CHART_URL,
-        params={"symbol": "xau", "range": range_, "interval": interval}
+            data = http_json(url, timeout=15)
+            price = data.get("spot_usd_oz")
+            state = data.get("data_state", {})
+            updated = data.get("updated_at") or state.get("as_of")
+
+            if not isinstance(price, (int, float)) or price <= 0:
+                raise RuntimeError("XAUS returned no valid XAU/USD price.")
+
+            return {
+                "price": float(price),
+                "updated_at": updated,
+                "data_state": state.get("status", "unknown"),
+                "source": source_name,
+            }
+
+        except Exception as exc:
+            errors.append(f"{source_name}: {exc}")
+
+    raise RuntimeError(
+        "Gold price data unavailable from all configured sources.\n"
+        + "\n".join(errors)
     )
 
-    # XAUS chart response is a list of OHLCV points: t,o,h,l,c,v
-    points = data.get("points") or data.get("bars") or []
 
+def _parse_goldprice_bars(data):
+    bars = data.get("bars") or []
     candles = []
-    for p in points:
+
+    for p in bars:
         try:
-            close = float(p["c"])
-            high = float(p["h"])
-            low = float(p["l"])
-            op = float(p["o"])
-            volume = float(p.get("v") or 0)
             candles.append({
-                "t": int(p["t"]),
-                "open": op,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": volume
+                "t": int(datetime.fromisoformat(
+                    p["bar_start"].replace("Z", "+00:00")
+                ).timestamp()),
+                "open": float(p["open"]),
+                "high": float(p["high"]),
+                "low": float(p["low"]),
+                "close": float(p["close"]),
+                "volume": 0.0,
             })
         except (KeyError, TypeError, ValueError):
             continue
 
-    if len(candles) < 30:
-        raise RuntimeError("Not enough real Gold OHLC candles returned.")
-
+    candles.sort(key=lambda x: x["t"])
     return candles
 
+
+def get_gold_candles(interval="15m", range_="5d"):
+    # Try XAUS intraday first. If it is unavailable, use the free
+    # GoldPrice.dev daily XAU/USD bars as a real-data fallback.
+    try:
+        data = http_json(
+            XAUS_CHART_URL,
+            params={"symbol": "xau", "range": range_, "interval": interval},
+            timeout=15,
+        )
+
+        points = data.get("points") or data.get("bars") or []
+        candles = []
+
+        for p in points:
+            try:
+                candles.append({
+                    "t": int(p["t"]),
+                    "open": float(p["o"]),
+                    "high": float(p["h"]),
+                    "low": float(p["l"]),
+                    "close": float(p["c"]),
+                    "volume": float(p.get("v") or 0),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        if len(candles) >= 30:
+            return candles
+    except Exception:
+        pass
+
+    # GoldPrice.dev free tier provides 30 days of daily XAU/USD OHLC.
+    today = utc_now().date()
+    start = today - timedelta(days=29)
+
+    data = http_json(
+        GOLD_BARS_URL,
+        params={
+            "symbol": "XAU-USD-SPOT",
+            "interval": "1d",
+            "from": start.isoformat() + "T00:00:00Z",
+            "to": today.isoformat() + "T23:59:59Z",
+            "limit": 100,
+        },
+        timeout=15,
+    )
+
+    candles = _parse_goldprice_bars(data)
+
+    if len(candles) < 10:
+        raise RuntimeError("Not enough real Gold OHLC data returned.")
+
+    return candles
 
 def get_btc_data(interval="15m", limit=300):
     # Binance public market-data endpoint; no API key required.
@@ -420,7 +505,7 @@ UTC time: {snapshot["time_utc"]}
 
 GOLD XAU/USD:
 Price: {g["price"]:.2f}
-Recent 15m change: {g["change_pct"]:.2f}%
+Recent change: {g["change_pct"]:.2f}%
 Structure: {g["structure"]}
 Support: {g["support"]}
 Resistance: {g["resistance"]}
