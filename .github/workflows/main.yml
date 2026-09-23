@@ -2,9 +2,8 @@ name: Gold & BTC Telegram Bot Automation
 
 on:
   schedule:
-    # Yeh cron schedule har kuch ghante baad ya aapke marzi ke mutabiq run hoga (UTC time ke hisab se)
     - cron: '0 */2 * * *'
-  workflow_dispatch: allow manual trigger
+  workflow_dispatch:
 
 jobs:
   run-bot:
