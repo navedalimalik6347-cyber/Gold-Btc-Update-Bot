@@ -1,30 +1,105 @@
-name: Gold & BTC Telegram Bot Automation
+name: Gold Update & News 24/7
 
 on:
-  schedule:
-    - cron: '0 */2 * * *'
+
+  # Manual testing from GitHub Actions
   workflow_dispatch:
+    inputs:
+      post_type:
+        description: "Choose what to post"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - test
+          - market
+          - news
+          - breaking
+
+  # Breaking-news checker
+  # GitHub supports scheduled workflows at a minimum
+  # interval of 5 minutes.
+  schedule:
+    - cron: "*/5 * * * *"
+
+    # 12 scheduled market updates per UTC day
+    - cron: "0 0 * * *"
+    - cron: "0 2 * * *"
+    - cron: "0 4 * * *"
+    - cron: "0 6 * * *"
+    - cron: "0 8 * * *"
+    - cron: "0 10 * * *"
+    - cron: "0 12 * * *"
+    - cron: "0 14 * * *"
+    - cron: "0 16 * * *"
+    - cron: "0 18 * * *"
+    - cron: "0 20 * * *"
+    - cron: "0 22 * * *"
+
+
+permissions:
+  contents: write
+
 
 jobs:
+
   run-bot:
-    runs-on: ubuntu-22.04
+
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install requests yfinance google-genai
+          pip install --upgrade pip
+          pip install yfinance requests google-genai
 
-      - name: Run Bot Script
+      - name: Determine post mode
+        id: mode
+        shell: bash
+        run: |
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.post_type }}" >> "$GITHUB_OUTPUT"
+
+          elif [ "${{ github.event.schedule }}" = "*/5 * * * *" ]; then
+            echo "mode=breaking" >> "$GITHUB_OUTPUT"
+
+          else
+            echo "mode=market" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run bot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_USERNAME: ${{ secrets.TELEGRAM_CHANNEL_USERNAME }}
+          POST_MODE: ${{ steps.mode.outputs.mode }}
+
         run: |
           python main.py
+
+      - name: Save bot state
+        if: always()
+        shell: bash
+        run: |
+
+          if git diff --quiet state.json 2>/dev/null; then
+            echo "No state changes."
+            exit 0
+          fi
+
+          git config user.name "Gold Update Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add state.json
+          git commit -m "Update bot state"
+          git push
