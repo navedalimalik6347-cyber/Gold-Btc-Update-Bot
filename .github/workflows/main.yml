@@ -1,0 +1,31 @@
+name: Gold & BTC Telegram Bot Automation
+
+on:
+  schedule:
+    # Yeh cron schedule har kuch ghante baad ya aapke marzi ke mutabiq run hoga (UTC time ke hisab se)
+    - cron: '0 */2 * * *'
+  workflow_dispatch: allow manual trigger
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests yfinance google-genai
+
+      - name: Run Bot Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_USERNAME: ${{ secrets.TELEGRAM_CHANNEL_USERNAME }}
+        run: |
+          python main.py
