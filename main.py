@@ -131,9 +131,15 @@ def telegram_send(text):
     token = get_env("TELEGRAM_BOT_TOKEN")
     chat = get_env("TELEGRAM_CHANNEL_USERNAME")
 
+    # Safety check: Prevent bot from trying to send message to its own username
+    if chat.endswith("_Bot") or chat.endswith("_bot"):
+        raise ValueError(
+            f"TELEGRAM_CHANNEL_USERNAME is set to '{chat}', which looks like a Bot username. "
+            "You must use your Telegram Channel's username (e.g., @GoldUpdateNews247), not the bot username!"
+        )
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    # Telegram text limit is 4096 characters.
     if len(text) > 4000:
         text = text[:3990].rstrip() + "\n…"
 
@@ -158,8 +164,6 @@ def telegram_send(text):
 # ----------------------------
 
 def get_gold_spot():
-    # Primary: goldprice.dev anonymous XAU/USD spot endpoint.
-    # Fallback: XAUS keyless XAU/USD spot endpoint.
     errors = []
 
     for url, source_name in [
@@ -238,8 +242,6 @@ def _parse_goldprice_bars(data):
 
 
 def get_gold_candles(interval="15m", range_="5d"):
-    # Try XAUS intraday first. If it is unavailable, use the free
-    # GoldPrice.dev daily XAU/USD bars as a real-data fallback.
     try:
         data = http_json(
             XAUS_CHART_URL,
@@ -268,7 +270,6 @@ def get_gold_candles(interval="15m", range_="5d"):
     except Exception:
         pass
 
-    # GoldPrice.dev free tier provides 30 days of daily XAU/USD OHLC.
     today = utc_now().date()
     start = today - timedelta(days=29)
 
@@ -291,13 +292,8 @@ def get_gold_candles(interval="15m", range_="5d"):
 
     return candles
 
-def get_btc_data(interval="15m", limit=300):
-    """Get real BTC/USD market data without Binance.
 
-    GitHub Actions is currently receiving HTTP 451 from Binance's public API.
-    We therefore use Coinbase public market data first, with Kraken as a
-    second public-data fallback. No API key is required for either path.
-    """
+def get_btc_data(interval="15m", limit=300):
     granularity_map = {
         "1m": 60,
         "5m": 300,
@@ -308,9 +304,6 @@ def get_btc_data(interval="15m", limit=300):
     }
     granularity = granularity_map.get(interval, 900)
 
-    # ----------------------------
-    # Primary: Coinbase Exchange
-    # ----------------------------
     try:
         raw = http_json(
             BTC_COINBASE_CANDLES_URL,
@@ -322,7 +315,6 @@ def get_btc_data(interval="15m", limit=300):
         for p in raw:
             if not isinstance(p, list) or len(p) < 6:
                 continue
-            # Coinbase candle format: [time, low, high, open, close, volume]
             candles.append({
                 "t": int(p[0]),
                 "open": float(p[3]),
@@ -340,7 +332,6 @@ def get_btc_data(interval="15m", limit=300):
         if price <= 0 and candles:
             price = candles[-1]["close"]
 
-        # 24h change from 15m candles: 96 bars = 24 hours.
         if len(candles) >= 97:
             base = candles[-97]["close"]
             change_pct = ((price - base) / base) * 100 if base else 0.0
@@ -359,9 +350,6 @@ def get_btc_data(interval="15m", limit=300):
     else:
         coinbase_message = "Coinbase returned insufficient BTC data."
 
-    # ----------------------------
-    # Fallback: Kraken public API
-    # ----------------------------
     try:
         raw = http_json(
             BTC_KRAKEN_OHLC_URL,
@@ -375,7 +363,6 @@ def get_btc_data(interval="15m", limit=300):
         result = raw.get("result", {})
         rows = result.get("XXBTZUSD") or result.get("XBTUSD")
         if not rows:
-            # Kraken may return the actual pair key under a different name.
             rows = next((v for k, v in result.items() if k != "last" and isinstance(v, list)), None)
 
         candles = []
@@ -438,11 +425,9 @@ def get_btc_data(interval="15m", limit=300):
 
 def pivot_levels(candles, lookback=120):
     c = candles[-lookback:]
-
     highs = []
     lows = []
 
-    # A level is considered only when it is an actual local pivot.
     for i in range(2, len(c) - 2):
         h = c[i]["high"]
         l = c[i]["low"]
@@ -517,22 +502,6 @@ def pct_change(candles, bars=16):
     return ((new - old) / old) * 100
 
 
-def format_price(symbol, value):
-    if symbol == "BTC":
-        return f"{value:,.0f}"
-    return f"{value:,.2f}"
-
-
-def format_zone(symbol, value, width):
-    if symbol == "BTC":
-        a = round(value - width)
-        b = round(value + width)
-        return f"{a:,}–{b:,}"
-    a = round(value - width, 2)
-    b = round(value + width, 2)
-    return f"{a:,.2f}–{b:,.2f}"
-
-
 def market_snapshot():
     gold = get_gold_spot()
     gold_c = get_gold_candles("15m", "5d")
@@ -589,7 +558,6 @@ def ai_text(prompt):
 
 
 def clean_ai_text(text):
-    # Keep Telegram output plain and compact.
     text = text.replace("**", "").replace("__", "")
     text = text.replace("```", "")
     return text.strip()
@@ -676,7 +644,7 @@ def trusted_source(url, source_title=""):
 
 def news_feed(query):
     url = (
-        "https://news.google.com/rss/search?"
+        "[https://news.google.com/rss/search](https://news.google.com/rss/search)?"
         + "q=" + quote(query + " when:1d")
         + "&hl=en-US&gl=US&ceid=US:en"
     )
@@ -698,12 +666,7 @@ def collect_news(max_items=20):
             if hasattr(entry, "source"):
                 source = getattr(entry.source, "title", "") or ""
 
-            if not title or not link:
-                continue
-
-            # Google News normally exposes the original publisher
-            # in source.title; reject items where we cannot verify source.
-            if not source:
+            if not title or not link or not source:
                 continue
 
             key = hashlib.sha256(
@@ -794,8 +757,6 @@ Source: {item["source"]}
 """
 
     body = clean_ai_text(ai_text(prompt))
-
-    # Source link must be visible under every news post.
     return body + f'\n\nSource: {item["source"]}\n{item["google_link"]}'
 
 
